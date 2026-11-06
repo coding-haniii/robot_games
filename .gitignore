@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# ROS2 / Colcon 빌드 관련
+build/
+install/
+log/
+.colcon/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 결과물 및 임시 파일
+out/
+*.csv
