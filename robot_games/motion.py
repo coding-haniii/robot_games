@@ -4,6 +4,11 @@ import numpy as np
 class MockRobot:
     def __init__(self): self.events=[]
     def draw(self, path, label='path'): self.events.append(('draw',label,len(path))); print(f'[MOCK] drawing {label}: {len(path)} points')
+    def run_rows(self, rows):
+        """CSV 행(dict) 실행 흉내: 실제 구동 없음."""
+        down=sum(1 for r in rows if r['pen']=='down')
+        self.events.append(('run_rows',len(rows),down))
+        print(f'[MOCK] CSV {len(rows)}행 실행 (pen down {down}행). 실제 로봇은 움직이지 않음')
     def home(self): self.events.append(('home',)); print('[MOCK] home')
     def celebrate(self): self.events.append(('celebrate',)); print('[MOCK] straight-arm celebration (symbolic)')
 
@@ -33,20 +38,27 @@ def image_path_to_base(path, shape, config):
 
 class GuardedDoosan:
     """Only runs motion when armed AND calibration confirmed; requires sourced Jazzy DSR_ROBOT2."""
-    def __init__(self, config):
+    def __init__(self, config, need_celebration=True):
         if not (config.get('armed') and config.get('calibration_confirmed')):
             raise PermissionError('Robot not armed and calibrated')
-        if config.get('home_joints_deg') is None or config.get('celebration_joints_deg') is None:
+        if config.get('home_joints_deg') is None or (need_celebration and config.get('celebration_joints_deg') is None):
             raise ValueError('Home/celebration must be taught and validated on real arm')
         self.cfg=config
         import rclpy
         import DR_init
         self.rclpy=rclpy
         rclpy.init()
-        DR_init.__dsr__id=config.get('namespace','dsr01')
-        DR_init.__dsr__model=config.get('model','e0509')
-        self.node=rclpy.create_node('games_operator',namespace=DR_init.__dsr__id)
-        DR_init.__dsr__node=self.node
+        # 클래스 안의 `DR_init.__dsr__id` 는 이름 맹글링(_GuardedDoosan__dsr__id)되어 DSR_ROBOT2 가 못 읽음 → setattr 사용
+        ns=config.get('namespace','dsr01')
+        setattr(DR_init,'__dsr__id',ns)
+        setattr(DR_init,'__dsr__model',config.get('model','e0509'))
+        self.node=rclpy.create_node('games_operator',namespace=ns)
+        setattr(DR_init,'__dsr__node',self.node)
+        from .dsr_preflight import preflight
+        try:
+            preflight(self.node,ns)  # 컨트롤러가 안 보이면 멈추지 않고 원인을 안내
+        except BaseException:
+            self.node.destroy_node(); rclpy.shutdown(); raise
         from DSR_ROBOT2 import movej,movel,posj,posx
         self.movej,self.movel,self.posj,self.posx=movej,movel,posj,posx
     def _joint(self, vals):
@@ -67,4 +79,12 @@ class GuardedDoosan:
             self.movel(self.posx(*point),vel=vel,acc=acc)
         last=path[-1].copy(); last[2]=safe
         self.movel(self.posx(*last),vel=vel,acc=acc)
+    def run_rows(self, rows):
+        """maze_csv 가 만든 '실측 기준' CSV 행을 순서대로 movel. 행마다 x,y,z,rx,ry,rz 를 사용(펜 올림/내림 Z 는 CSV 에 이미 반영).
+        저속 제한은 draw() 와 동일. 오류가 나면 즉시 중단(예외) — 호출자가 home/정지 처리."""
+        vel=float(self.cfg['speed_mm_s']); acc=float(self.cfg['accel_mm_s2'])
+        if not (0<vel<=20 and 0<acc<=50): raise ValueError('Restrict speed/acceleration during commissioning')
+        for r in rows:
+            pose=[r['x'],r['y'],r['z'],r['rx'],r['ry'],r['rz']]
+            self.movel(self.posx(*pose),vel=vel,acc=acc)
     def close(self): self.node.destroy_node(); self.rclpy.shutdown()
